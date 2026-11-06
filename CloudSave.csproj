@@ -1,0 +1,109 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Build against the shared Silk assemblies from Silk\Library (copied into lib\),
+    not NuGet packages. No ILRepack: the output DLL must contain ONLY CloudSave types.
+    Merging a second build of HarmonyLib/MonoMod/Silk into the DLL breaks the shared
+    0Harmony.dll's AccessTools static constructor and breaks Silk's `is SilkMod`
+    registration check (the loader sees a different Silk.SilkMod type from the DLL).
+    Same pattern as SpiderHeckPalette / Jukebox.
+  -->
+
+  <!-- Mod Info -->
+  <PropertyGroup>
+    <Title>SpiderHeck CloudSave</Title>
+    <Version>0.2.0</Version>
+    <AssemblyVersion>$(Version)</AssemblyVersion>
+    <FileVersion>$(Version)</FileVersion>
+    <Authors>AeonS</Authors>
+    <Product>SpiderHeck CloudSave</Product>
+    <OutputType>library</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Description>SpiderHeck CloudSave: keeps your save data, Silk settings and Silk mods in a cloud-synced folder (OneDrive, Google Drive or a custom folder). For Silk 0.7.0.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug' OR '$(Configuration)'=='Release'">
+    <AssemblyName>SpiderHeckCloudSave</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Assembly References -->
+  <ItemGroup>
+    <Reference Include="Silk">
+      <HintPath>./lib/Silk.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>./lib/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="YamlDotNet">
+      <HintPath>./lib/YamlDotNet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="NewAssembly">
+      <HintPath>./lib/NewAssembly.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MyScriptAssembly">
+      <HintPath>./lib/MyScriptAssembly.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>./lib/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>./lib/Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>./lib/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>./lib/UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>./lib/UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>./lib/Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>./lib/UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+      <HintPath>./lib/UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Netcode.Runtime">
+      <HintPath>./lib/Unity.Netcode.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Collections">
+      <HintPath>./lib/Unity.Collections.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Mathematics">
+      <HintPath>./lib/Unity.Mathematics.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DoozyEngine">
+      <HintPath>./lib/DoozyEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="I2">
+      <HintPath>./lib/I2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Helper\cloudsave-helper.ps1" LogicalName="CloudSave.Helper.ps1" />
+  </ItemGroup>
+</Project>
