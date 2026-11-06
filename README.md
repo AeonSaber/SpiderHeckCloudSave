@@ -10,10 +10,12 @@ A mod for SpiderHeck by AeonS. Sister mods: [SpiderHeck Palette](https://github.
 - **Finds your sync folder.** OneDrive comes from Windows' own records. Google Drive comes from Google Drive for desktop's settings, so it works wherever you told the app to put your files. Or pick any folder.
 - **Changes happen after the game closes.** Windows won't let folders that the game has open be moved, so a small helper waits for SpiderHeck to exit and then does the work.
 - **Safe by design.**
-  - Each change starts with a full backup of every folder it touches. The last 5 changes are kept in `%LOCALAPPDATA%\SpiderHeckCloudSave\Backups`.
+  - Each change starts with a full backup of every folder it touches, as it was. The last 5 changes are kept in `%LOCALAPPDATA%\SpiderHeckCloudSave\Backups`. The menu and the Silk log say where each backup went, and every backup has a `backup-info.txt` saying what each copy is and where it came from.
   - Files are copied and checked by count and size before anything is removed.
+  - A folder is never half-deleted. The old folder is renamed aside, the link goes in, and only then is the old folder deleted. If that last delete fails, it's reported as safe to delete by hand.
   - Each folder is either changed completely or left as it was.
   - Cloud copies are never deleted, because your other PCs may be using them.
+- **Restore from backup.** The menu lists the recent backups with a **Restore** button for each. Your folders as they are at that moment are backed up first, so a restore can be undone too.
 - **Turn off or switch at any time.** Turning it off copies everything back to this PC. Choosing another cloud folder moves everything there. Both keep the old cloud copy.
 - **Second PC friendly.** If the cloud folder already has SpiderHeck data, the menu asks which copy to use, and the other one is kept as a backup.
 
@@ -43,8 +45,9 @@ Open Silk's mod list in the game and choose **SpiderHeckCloudSave**:
 - **Which copy should be used?**: shown when the chosen cloud folder already has SpiderHeck data. Pick the cloud copy (this PC's copy goes to the backup) or this PC's copy (the cloud copy is renamed to `<name>.replaced-<date>` and backed up).
 - **Turn off cloud save**: copies the folders back to this PC when the game closes. The cloud copy is kept.
 - **Finish moving the remaining folders**: shown if an earlier change only moved some folders.
+- **Backups**: the recent backups (date, what change they came before, and what they hold), each with **Restore the ... backup**. A restore puts every folder in that backup back wherever the folder lives now, on this PC or in the cloud folder. In the cloud folder, the copy it replaces is renamed aside, not deleted.
 - **Open cloud folder** and **Open backups folder**.
-- **Last change**: the result of the helper's last run, with the reason and the log path if something failed.
+- **Last change**: the result of the helper's last run, where its backup went, and the reason and log path if something failed.
 
 Your sync app should keep the `SpiderHeck` folder available offline (OneDrive: "Always keep on this device"), so the game never waits for a download.
 
@@ -53,7 +56,7 @@ Your sync app should keep the `SpiderHeck` folder available offline (OneDrive: "
 Everything CloudSave keeps for itself is in `%LOCALAPPDATA%\SpiderHeckCloudSave\`, on purpose outside the folders it moves, so settings stay per PC and never sync:
 
 - `settings.txt`: the chosen cloud folder and any change waiting for the next exit.
-- `Backups\<date-time>\`: full copies made before each change (the last 5 changes).
+- `Backups\<date-time>\`: full copies made before each change (the last 5 changes), one folder per copy, plus `backup-info.txt` describing them. To restore by hand, close the game and copy a folder back to where it came from.
 - `Runs\<date-time>.log`: what the helper did, step by step.
 - `last-run.txt`: the summary the menu shows.
 
@@ -67,7 +70,13 @@ Everything CloudSave keeps for itself is in `%LOCALAPPDATA%\SpiderHeckCloudSave\
 ## How it works
 
 - A postfix on `GameSaveWrapper.OnApplicationQuit` (after the game's final save) writes a plan to `Runs\` and starts `cloudsave-helper.ps1`, which is embedded in the DLL, with Windows PowerShell.
-- The helper waits for the game's process to exit, then for each folder: backs it up with robocopy, checks the copy, copies it to its new place, checks again, removes the original, and creates the junction. On any failure it puts that folder back the way it was.
+- The helper waits for the game's process to exit, then for each folder:
+  1. backs it up with robocopy and checks the copy;
+  2. copies it to its new place and checks again;
+  3. renames the original aside and creates the junction;
+  4. deletes the renamed original, after clearing Windows' read-only flag, which folders copied out of OneDrive carry.
+
+  On any failure it puts that folder back the way it was. `Helper\test-helper.ps1` runs every case against dummy folders.
 - Google Drive for desktop's chosen folder is read from `%LOCALAPPDATA%\Google\DriveFS\root_preference_sqlite.db` (table `roots`, the row with `is_my_drive = 1`), using Windows' own `winsqlite3.dll`. Stream mode falls back to the drive labelled "Google Drive".
 - A postfix on `Announcer.ModsPopup` builds the settings page in Silk's mod menu.
 

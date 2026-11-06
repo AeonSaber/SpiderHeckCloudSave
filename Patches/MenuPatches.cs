@@ -95,6 +95,7 @@ namespace CloudSave.Patches
                     CloudSaveConfig.Set("Pending", "");
                     CloudSaveConfig.Set("NewProvider", "");
                     CloudSaveConfig.Set("NewCloudRoot", "");
+                    CloudSaveConfig.Set("RestoreFrom", "");
                     _message = "Change cancelled.";
                     RefreshLater(menu);
                 });
@@ -142,7 +143,7 @@ namespace CloudSave.Patches
                 }
             }
 
-            AddButton(menu, "Open backups folder", () => CloudSaveController.OpenFolder(HelperLauncher.BackupsDir));
+            AddBackups(menu);
 
             Spacer(menu);
             menu.CreateParagraph("<size=90%><color=#AAAAAA>Changes happen after the game closes: a small helper waits for SpiderHeck to exit, makes a full backup of each folder, then copies, checks and links it. Cloud copies are never deleted. Your sync app should keep the SpiderHeck folder available offline.</color></size>");
@@ -159,6 +160,16 @@ namespace CloudSave.Patches
 
             string outcome = last.Ok ? "<color=#00FF00>done</color>" : "<color=#FF5555>failed</color>";
             menu.CreateParagraph($"<size=100%><b>Last change:</b> {DescribeAction(last.Action)}, {FormatStamp(last.Stamp)}: {outcome}</size>");
+
+            if (!string.IsNullOrEmpty(last.Backup))
+            {
+                menu.CreateParagraph($"<size=90%><color=#AAAAAA>Backup of the folders from before it: <noparse>{last.Backup}</noparse></color></size>");
+            }
+
+            foreach (string warning in last.Warnings)
+            {
+                menu.CreateParagraph($"<size=90%><color=#FFAA00><noparse>{warning}</noparse></color></size>");
+            }
 
             if (last.Ok)
             {
@@ -179,6 +190,38 @@ namespace CloudSave.Patches
             }
 
             menu.CreateParagraph($"<size=85%><color=#888888>Log: <noparse>{last.Log}</noparse></color></size>");
+        }
+
+        private static void AddBackups(ModsMenuPopup menu)
+        {
+            Spacer(menu);
+            menu.CreateParagraph("<size=120%><color=#AAAAAA>Backups</color></size>");
+            menu.CreateParagraph($"<size=90%><color=#AAAAAA>Each change first copies every folder it touches, as it was, to <noparse>{HelperLauncher.BackupsDir}</noparse>. The last {HelperLauncher.KeepBackups} changes are kept.</color></size>");
+
+            var backups = HelperLauncher.ListBackups();
+            if (backups.Count == 0)
+            {
+                menu.CreateParagraph("<size=90%><color=#666666>(no backups yet)</color></size>");
+            }
+
+            foreach (var backup in backups)
+            {
+                string before = string.IsNullOrEmpty(backup.Action) ? "" : $" (before: {DescribeAction(backup.Action)})";
+                menu.CreateParagraph($"<size=95%><b>{FormatStamp(backup.Stamp)}</b>{before}: <noparse>{backup.Summary}</noparse></size>");
+
+                string stamp = backup.Stamp;
+                AddButton(menu, $"Restore the {FormatStamp(stamp)} backup", () =>
+                {
+                    CloudSaveConfig.Set("Pending", "Restore");
+                    CloudSaveConfig.Set("RestoreFrom", stamp);
+                    CloudSaveConfig.Set("NewProvider", "");
+                    CloudSaveConfig.Set("NewCloudRoot", "");
+                    _message = $"When the game closes, the {FormatStamp(stamp)} backup will be put back. Your folders as they are now are backed up first, so this can be undone.";
+                    RefreshLater(menu);
+                });
+            }
+
+            AddButton(menu, "Open backups folder", () => CloudSaveController.OpenFolder(HelperLauncher.BackupsDir));
         }
 
         private static void AddConflictChoice(ModsMenuPopup menu)
@@ -300,6 +343,7 @@ namespace CloudSave.Patches
                 case "Enable": return "move the folders to the cloud folder";
                 case "Disable": return "copy the folders back to this PC and turn cloud save off";
                 case "Switch": return $"move the folders to {Path.Combine(CloudSaveConfig.NewCloudRoot, "SpiderHeck")}";
+                case "Restore": return $"put back the {FormatStamp(CloudSaveConfig.RestoreFrom)} backup (your folders as they are now are backed up first)";
                 default: return pending;
             }
         }
@@ -311,6 +355,7 @@ namespace CloudSave.Patches
                 case "Enable": return "turn on";
                 case "Disable": return "turn off";
                 case "Switch": return "move to another folder";
+                case "Restore": return "restore a backup";
                 default: return action;
             }
         }

@@ -14,8 +14,18 @@ namespace CloudSave
         public string Action = "";
         public bool Ok;
         public string Log = "";
+        public string Backup = "";
         public string Error = "";
         public readonly List<KeyValuePair<string, string>> Roots = new List<KeyValuePair<string, string>>();
+        public readonly List<string> Warnings = new List<string>();
+    }
+
+    public class BackupInfo
+    {
+        public string Stamp = "";
+        public string Path = "";
+        public string Action = "";
+        public string Summary = "";
     }
 
     // Folders are never moved while the game runs: Silk keeps the mod DLLs open and the game keeps
@@ -35,7 +45,7 @@ namespace CloudSave
         public static string LogPathFor(string stamp) => Path.Combine(RunsDir, stamp + ".log");
 
         // Starts the helper. Returns the run stamp, or null if it could not be started.
-        public static string Launch(string action, RootInfo[] roots, string whenBothExist)
+        public static string Launch(string action, RootInfo[] roots, string whenBothExist, string restoreFrom)
         {
             try
             {
@@ -48,7 +58,7 @@ namespace CloudSave
 
                 var game = Process.GetCurrentProcess();
                 string planPath = Path.Combine(RunsDir, stamp + ".plan.json");
-                File.WriteAllText(planPath, BuildPlan(action, stamp, game.Id, game.ProcessName, whenBothExist, roots), new UTF8Encoding(false));
+                File.WriteAllText(planPath, BuildPlan(action, stamp, game.Id, game.ProcessName, whenBothExist, restoreFrom, roots), new UTF8Encoding(false));
 
                 string powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
                 if (!File.Exists(powershell))
@@ -123,7 +133,9 @@ namespace CloudSave
                         case "Action": result.Action = value; break;
                         case "Ok": result.Ok = value.Trim() == "true"; break;
                         case "Log": result.Log = value; break;
+                        case "Backup": result.Backup = value; break;
                         case "Error": result.Error = value; break;
+                        case "Warning": result.Warnings.Add(value); break;
                         default:
                             if (key.StartsWith("Root:"))
                             {
@@ -141,6 +153,71 @@ namespace CloudSave
             }
         }
 
+        // The backups kept under Backups, newest first, with a one-line summary of each.
+        public static List<BackupInfo> ListBackups()
+        {
+            var backups = new List<BackupInfo>();
+            try
+            {
+                if (!Directory.Exists(BackupsDir))
+                {
+                    return backups;
+                }
+
+                var folders = new List<string>(Directory.GetDirectories(BackupsDir));
+                folders.Sort(StringComparer.Ordinal);
+                folders.Reverse();
+                foreach (string folder in folders)
+                {
+                    string stamp = Path.GetFileName(folder);
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(stamp, @"^\d{8}-\d{6}$"))
+                    {
+                        continue;
+                    }
+
+                    var info = new BackupInfo { Stamp = stamp, Path = folder };
+                    var parts = new List<string>();
+                    string infoFile = Path.Combine(folder, "backup-info.txt");
+                    if (File.Exists(infoFile))
+                    {
+                        foreach (string line in File.ReadAllLines(infoFile))
+                        {
+                            string text = line.TrimStart('﻿');
+                            if (text.StartsWith("Action="))
+                            {
+                                info.Action = text.Substring(7);
+                            }
+                            else if (text.StartsWith("Folder:"))
+                            {
+                                // Folder:<name>=<root name>|<what>|<from>|<files>|<bytes>
+                                string[] fields = text.Substring(text.IndexOf('=') + 1).Split('|');
+                                if (fields.Length >= 4)
+                                {
+                                    parts.Add($"{fields[0]} ({fields[3]} files, {fields[1]})");
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // 0.2.0 backups have no backup-info.txt; describe their folders.
+                        foreach (string sub in Directory.GetDirectories(folder))
+                        {
+                            parts.Add($"{Path.GetFileName(sub)} ({Directory.GetFiles(sub, "*", SearchOption.AllDirectories).Length} files)");
+                        }
+                    }
+
+                    info.Summary = parts.Count > 0 ? string.Join(", ", parts) : "(empty)";
+                    backups.Add(info);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"[CloudSave] Could not list the backups: {ex.Message}");
+            }
+            return backups;
+        }
+
         private static string ReadScript()
         {
             using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ScriptResource))
@@ -156,7 +233,7 @@ namespace CloudSave
             }
         }
 
-        private static string BuildPlan(string action, string stamp, int gamePid, string gameName, string whenBothExist, RootInfo[] roots)
+        private static string BuildPlan(string action, string stamp, int gamePid, string gameName, string whenBothExist, string restoreFrom, RootInfo[] roots)
         {
             var json = new StringBuilder();
             json.Append('{');
@@ -171,6 +248,7 @@ namespace CloudSave
             Field(json, "LogPath", LogPathFor(stamp));
             Field(json, "ResultPath", ResultPath);
             Field(json, "WhenBothExist", whenBothExist);
+            Field(json, "RestoreFrom", restoreFrom ?? "");
             json.Append($"\"KeepBackups\":{KeepBackups},");
             json.Append("\"Roots\":[");
             for (int i = 0; i < roots.Length; i++)

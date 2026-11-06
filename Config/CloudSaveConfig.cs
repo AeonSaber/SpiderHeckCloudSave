@@ -22,7 +22,7 @@ namespace CloudSave
         public static string CloudRoot => Get("CloudRoot");
         public static string CustomPath => Get("CustomPath");
 
-        // What happens when the game exits: "", "Enable", "Disable" or "Switch".
+        // What happens when the game exits: "", "Enable", "Disable", "Switch" or "Restore".
         public static string Pending
         {
             get
@@ -31,6 +31,9 @@ namespace CloudSave
                 return value == "Undo" ? "Disable" : value; // "Undo" was 0.1.0's name for Disable
             }
         }
+
+        // The backup a "Restore" puts back: a folder name under Backups, e.g. 20261106-160223.
+        public static string RestoreFrom => Get("RestoreFrom");
 
         // The folder a "Switch" moves to.
         public static string NewProvider => Get("NewProvider");

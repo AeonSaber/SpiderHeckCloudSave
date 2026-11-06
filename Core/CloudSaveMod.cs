@@ -6,7 +6,7 @@ using Logger = Silk.Logger;
 
 namespace CloudSave
 {
-    [SilkMod(ModName, new string[] { "AeonS" }, "0.2.0", "0.7.0", ModName, 1)]
+    [SilkMod(ModName, new string[] { "AeonS" }, "0.3.0", "0.7.0", ModName, 1)]
     public class CloudSaveMod : SilkMod
     {
         // Silk shows this name in its mod list and passes it to Announcer.ModsPopup as the menu title.

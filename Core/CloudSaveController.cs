@@ -102,6 +102,16 @@ namespace CloudSave
                 Logger.LogInfo($"[CloudSave]   {root.Key}: {root.Value}");
             }
 
+            foreach (string warning in result.Warnings)
+            {
+                Logger.LogWarning($"[CloudSave]   {warning}");
+            }
+
+            if (!string.IsNullOrEmpty(result.Backup))
+            {
+                Logger.LogInfo($"[CloudSave] Backup of the folders as they were before that change: {result.Backup}");
+            }
+
             if (result.Ok && result.Action == "Disable")
             {
                 CloudSaveConfig.Set("Provider", "");
@@ -120,15 +130,30 @@ namespace CloudSave
                 return;
             }
 
+            string restoreFrom = "";
+            if (action == "Restore")
+            {
+                string name = CloudSaveConfig.RestoreFrom;
+                restoreFrom = string.IsNullOrEmpty(name) ? "" : Path.Combine(HelperLauncher.BackupsDir, name);
+                if (restoreFrom.Length == 0 || !Directory.Exists(restoreFrom))
+                {
+                    Logger.LogWarning($"[CloudSave] The backup to restore ({name}) no longer exists, so nothing was done.");
+                    CloudSaveConfig.Set("Pending", "");
+                    CloudSaveConfig.Set("RestoreFrom", "");
+                    return;
+                }
+            }
+
+            bool needsTarget = action == "Enable" || action == "Switch";
             string targetRoot = action == "Switch" ? CloudSaveConfig.NewCloudRoot : CloudSaveConfig.CloudRoot;
-            if (action != "Disable" && string.IsNullOrEmpty(targetRoot))
+            if (needsTarget && string.IsNullOrEmpty(targetRoot))
             {
                 Logger.LogWarning("[CloudSave] No cloud folder is chosen, so there is nothing to do.");
                 CloudSaveConfig.Set("Pending", "");
                 return;
             }
 
-            string stamp = HelperLauncher.Launch(action, Roots(action == "Disable" ? null : targetRoot), CloudSaveConfig.WhenBothExist);
+            string stamp = HelperLauncher.Launch(action, Roots(needsTarget ? targetRoot : null), CloudSaveConfig.WhenBothExist, restoreFrom);
             if (stamp == null)
             {
                 return; // the change stays pending for the next exit
@@ -144,8 +169,9 @@ namespace CloudSave
             CloudSaveConfig.Set("NewProvider", "");
             CloudSaveConfig.Set("NewCloudRoot", "");
             CloudSaveConfig.Set("WhenBothExist", "");
+            CloudSaveConfig.Set("RestoreFrom", "");
 
-            Logger.LogInfo($"[CloudSave] {action} handed to the helper, which runs once the game has closed. Log: {HelperLauncher.LogPathFor(stamp)}");
+            Logger.LogInfo($"[CloudSave] {action} handed to the helper, which runs once the game has closed. It backs up the folders to {Path.Combine(HelperLauncher.BackupsDir, stamp)} first. Log: {HelperLauncher.LogPathFor(stamp)}");
         }
 
         public static void OpenFolder(string path)

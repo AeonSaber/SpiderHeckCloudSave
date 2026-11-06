@@ -1,10 +1,14 @@
 # SpiderHeck CloudSave helper, started by the mod as the game exits.
 #
-# Waits for the game to close, then turns cloud save on, turns it off, or moves it to another
-# folder, as the plan file says. Every change follows the same rules:
-#   - back up first (a full copy under Backups\<run>\) and check the copy;
-#   - copy and check before deleting anything;
-#   - never delete a cloud copy, because other PCs may use it (a replaced one is renamed);
+# Waits for the game to close, then turns cloud save on or off, moves it to another folder, or
+# restores a backup, as the plan file says. Every change follows the same rules:
+#   - back up first: a full copy of every folder it is about to change, in Backups\<run>\, with
+#     backup-info.txt saying what each copy is and where it came from;
+#   - copy and check before removing anything, and never leave a folder half-deleted: the old
+#     folder is renamed aside, the link (or restored copy) goes in, and only then is the old
+#     folder deleted;
+#   - never delete anything inside a cloud folder, because other PCs may use it (replaced cloud
+#     data is renamed, not removed);
 #   - leave each folder either fully changed or as it was.
 # Writes a log to Runs\<run>.log and a summary to last-run.txt for the mod to show.
 
@@ -15,6 +19,8 @@ Set-StrictMode -Version 2
 
 $plan = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $rootResults = New-Object System.Collections.Generic.List[string]
+$warnings = New-Object System.Collections.Generic.List[string]
+$backupInfo = New-Object System.Collections.Generic.List[string]
 $fatal = $null
 $ok = $true
 
@@ -68,8 +74,8 @@ function Measure-Tree([string]$Path) {
     return New-Object psobject -Property @{ Count = $count; Bytes = $bytes }
 }
 
-# Copies a folder into an empty or missing destination and checks the copy file by file count
-# and size. Returns the source's count and size.
+# Copies a folder into an empty or missing destination and checks the copy by file count and
+# size. Returns the source's count and size.
 function Copy-Tree([string]$From, [string]$To) {
     $source = Measure-Tree $From
     if ((Measure-Tree $To).Count -gt 0) { throw "'$To' is not empty" }
@@ -86,32 +92,64 @@ function Copy-Tree([string]$From, [string]$To) {
     return $source
 }
 
-# Deletes a real folder (only ever called after its contents were copied and checked), or just
-# the link if the path is a link.
+# Folders copied out of OneDrive arrive read-only, and Windows refuses to delete read-only
+# folders ("Access denied"). That stopped 0.2.0 halfway through deleting this PC's copy.
+function Clear-ReadOnly([string]$Path) {
+    $readOnly = [System.IO.FileAttributes]::ReadOnly
+    $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force)
+    foreach ($item in $items) {
+        if (($item.Attributes -band $readOnly) -ne 0) {
+            $item.Attributes = $item.Attributes -band (-bnot $readOnly)
+        }
+    }
+}
+
+# Deletes a real folder (only ever after its contents were copied and checked), or just the link
+# if the path is a link.
 function Remove-Tree([string]$Path) {
     if (Test-Junction $Path) {
         [System.IO.Directory]::Delete($Path, $false)
         return
     }
-    Get-ChildItem -LiteralPath $Path -Recurse -Force -File | ForEach-Object {
-        if ($_.IsReadOnly) { $_.IsReadOnly = $false }
-    }
+    Clear-ReadOnly $Path
     [System.IO.Directory]::Delete($Path, $true)
 }
 
-function New-Junction([string]$Link, [string]$Target) {
-    $parent = Split-Path -Parent $Link
-    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
-    New-Item -ItemType Junction -Path $Link -Value $Target | Out-Null
-    if (-not (Test-Junction $Link)) { throw "could not create the link '$Link'" }
-    $actual = Get-JunctionTarget $Link
-    if ((Get-FullPath $actual) -ne (Get-FullPath $Target)) {
-        throw "the link '$Link' points to '$actual' instead of '$Target'"
+# Renames a folder next to itself (one atomic step: it either fully happens or not at all).
+function Set-Aside([string]$Path, [string]$Suffix) {
+    $aside = "$Path.$Suffix"
+    $n = 2
+    while (Test-Path -LiteralPath $aside) { $aside = "$Path.$Suffix-$n"; $n++ }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+        $item.Attributes = $item.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+    }
+    [System.IO.Directory]::Move($Path, $aside)
+    return $aside
+}
+
+# Deleting a folder that was set aside is tidying up, not part of the change: if it fails, the
+# change still stands and the folder is reported so it can be deleted by hand.
+function Remove-Leftover([string]$Path) {
+    try {
+        Remove-Tree $Path
+    } catch {
+        $reason = ($_.Exception.Message -replace '[\r\n]+', ' ')
+        Write-Log "  could not delete the old folder $Path ($reason); it is safe to delete by hand"
+        $warnings.Add("The old folder $Path could not be deleted; it is safe to delete by hand.")
     }
 }
 
+function Backup-Folder($Root, [string]$From, [string]$Name, [string]$What) {
+    $destination = Join-Path $plan.BackupDir $Name
+    $saved = Copy-Tree $From $destination
+    $backupInfo.Add("Folder:$Name=$($Root.Name)|$What|$From|$($saved.Count)|$($saved.Bytes)")
+    Write-Log "  backed up $($saved.Count) files from $From to $destination"
+    return $saved
+}
+
 # This PC's folder -> the cloud folder, leaving a link behind.
-function Enable-Root($Root, [string]$CloudPath) {
+function Enable-Root($Root, [string]$CloudPath, [bool]$AlreadyBackedUp) {
     $local = Get-FullPath $Root.Local
     $cloud = Get-FullPath $CloudPath
 
@@ -127,9 +165,10 @@ function Enable-Root($Root, [string]$CloudPath) {
         return "linked to $cloud (there was no folder on this PC)"
     }
 
-    $backup = Join-Path $plan.BackupDir ($Root.Key + '-pc')
-    $saved = Copy-Tree $local $backup
-    Write-Log "  backed up $($saved.Count) files: $local -> $backup"
+    if (-not $AlreadyBackedUp) {
+        Backup-Folder $Root $local $Root.Key 'this PC' | Out-Null
+    }
+    $saved = Measure-Tree $local
 
     $cloudFiles = (Measure-Tree $cloud).Count
     if ($cloudFiles -gt 0 -and $plan.WhenBothExist -ne 'Local') {
@@ -137,10 +176,9 @@ function Enable-Root($Root, [string]$CloudPath) {
     } else {
         $aside = $null
         if ($cloudFiles -gt 0) {
-            $old = Copy-Tree $cloud (Join-Path $plan.BackupDir ($Root.Key + '-cloud-replaced'))
-            $aside = "$cloud.replaced-$($plan.Stamp)"
-            [System.IO.Directory]::Move($cloud, $aside)
-            Write-Log "  the cloud copy that was there ($($old.Count) files) was renamed to $aside and backed up"
+            Backup-Folder $Root $cloud ($Root.Key + '-replaced-cloud') 'the cloud folder (replaced)' | Out-Null
+            $aside = Set-Aside $cloud "replaced-$($plan.Stamp)"
+            Write-Log "  the cloud copy that was there was renamed to $aside"
         }
         try {
             Copy-Tree $local $cloud | Out-Null
@@ -153,15 +191,16 @@ function Enable-Root($Root, [string]$CloudPath) {
         $outcome = "moved $($saved.Count) files to $cloud"
     }
 
-    Remove-Tree $local
+    $old = Set-Aside $local "cloudsave-old-$($plan.Stamp)"
     try {
         New-Junction $local $cloud
     } catch {
         $reason = $_.Exception.Message
         if (Test-Path -LiteralPath $local) { Remove-Tree $local }
-        Copy-Tree $backup $local | Out-Null
-        throw "could not link '$local' ($reason); this PC's folder was restored from the backup"
+        [System.IO.Directory]::Move($old, $local)
+        throw "could not link '$local' ($reason); this PC's folder was put back"
     }
+    Remove-Leftover $old
     return $outcome
 }
 
@@ -179,9 +218,7 @@ function Disable-Root($Root) {
         throw "it is linked to '$cloud', which is missing, so the link was left as it is"
     }
 
-    $backup = Join-Path $plan.BackupDir ($Root.Key + '-cloud')
-    $saved = Copy-Tree $cloud $backup
-    Write-Log "  backed up $($saved.Count) files: $cloud -> $backup"
+    $saved = Backup-Folder $Root $cloud $Root.Key 'the cloud folder'
 
     [System.IO.Directory]::Delete($local, $false) # removes only the link
     if (Test-Path -LiteralPath $local) { throw "could not remove the link '$local'" }
@@ -200,17 +237,71 @@ function Disable-Root($Root) {
         New-Junction $local $cloud
         throw "could not copy the files back ($reason); the link was put back"
     }
-    return "restored $($saved.Count) files to this PC; the cloud copy at $cloud was kept"
+    Clear-ReadOnly $local
+    return "copied $($saved.Count) files back to this PC; the cloud copy at $cloud was kept"
+}
+
+# A backup -> wherever the folder lives now (this PC, or the cloud folder it is linked to).
+function Restore-Root($Root) {
+    $source = $null
+    foreach ($name in @($Root.Key, "$($Root.Key)-cloud", "$($Root.Key)-pc")) { # the last two are 0.2.0 names
+        $candidate = Join-Path $plan.RestoreFrom $name
+        if (Test-Path -LiteralPath $candidate) { $source = $candidate; break }
+    }
+    if ($null -eq $source) { return 'not in this backup, so it was left as it is' }
+
+    $local = Get-FullPath $Root.Local
+    $inCloud = Test-Junction $local
+    if ($inCloud) { $target = Get-FullPath (Get-JunctionTarget $local) } else { $target = $local }
+    $wanted = Measure-Tree $source
+
+    $aside = $null
+    if (Test-Path -LiteralPath $target) {
+        Backup-Folder $Root $target $Root.Key 'the folder before the restore' | Out-Null
+        $aside = Set-Aside $target "before-restore-$($plan.Stamp)"
+    }
+
+    try {
+        Copy-Tree $source $target | Out-Null
+    } catch {
+        $reason = $_.Exception.Message
+        if (Test-Path -LiteralPath $target) { Remove-Tree $target }
+        if ($null -ne $aside) { [System.IO.Directory]::Move($aside, $target) }
+        throw "could not restore the backup ($reason); nothing was changed"
+    }
+    Clear-ReadOnly $target
+
+    if ($null -ne $aside) {
+        if ($inCloud) {
+            Write-Log "  the cloud copy that was there was renamed to $aside and kept (cloud copies are never deleted)"
+        } else {
+            Remove-Leftover $aside
+        }
+    }
+    return "restored $($wanted.Count) files from $source to $target"
+}
+
+function New-Junction([string]$Link, [string]$Target) {
+    $parent = Split-Path -Parent $Link
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    New-Item -ItemType Junction -Path $Link -Value $Target | Out-Null
+    if (-not (Test-Junction $Link)) { throw "could not create the link '$Link'" }
+    $actual = Get-JunctionTarget $Link
+    if ((Get-FullPath $actual) -ne (Get-FullPath $Target)) {
+        throw "the link '$Link' points to '$actual' instead of '$Target'"
+    }
 }
 
 function Remove-OldRuns {
+    $keepAlso = ''
+    if ($plan.Action -eq 'Restore') { $keepAlso = Split-Path -Leaf $plan.RestoreFrom }
     Get-ChildItem -LiteralPath $plan.BackupsRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d{8}-\d{6}$' } |
+        Where-Object { $_.Name -match '^\d{8}-\d{6}$' -and $_.Name -ne $keepAlso } |
         Sort-Object Name -Descending |
         Select-Object -Skip ([int]$plan.KeepBackups) |
         ForEach-Object {
             Write-Log "Removing old backup $($_.FullName)"
-            Remove-Tree $_.FullName
+            Remove-Leftover $_.FullName
         }
     Get-ChildItem -LiteralPath (Split-Path -Parent $plan.LogPath) -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '^\d{8}-\d{6}\.(log|plan\.json)$' } |
@@ -230,6 +321,10 @@ try {
     }
     Start-Sleep -Seconds 2
 
+    if ($plan.Action -eq 'Restore' -and -not (Test-Path -LiteralPath $plan.RestoreFrom)) {
+        throw "the backup '$($plan.RestoreFrom)' does not exist"
+    }
+
     foreach ($root in $plan.Roots) {
         if (Get-Process -Name $plan.GameName -ErrorAction SilentlyContinue) {
             $ok = $false
@@ -240,13 +335,14 @@ try {
         Write-Log "$($root.Name):"
         try {
             switch ($plan.Action) {
-                'Enable' { $message = Enable-Root $root $root.Cloud }
+                'Enable' { $message = Enable-Root $root $root.Cloud $false }
                 'Disable' { $message = Disable-Root $root }
                 'Switch' {
                     $first = Disable-Root $root
                     Write-Log "  $first"
-                    $message = Enable-Root $root $root.Cloud
+                    $message = Enable-Root $root $root.Cloud $true
                 }
+                'Restore' { $message = Restore-Root $root }
                 default { throw "unknown action '$($plan.Action)'" }
             }
             Write-Log "  $message"
@@ -265,13 +361,26 @@ try {
     $fatal = ($_.Exception.Message -replace '[\r\n]+', ' ')
     Write-Log "FAILED: $fatal"
 } finally {
+    $hasBackup = Test-Path -LiteralPath $plan.BackupDir
+    if ($hasBackup) {
+        $info = New-Object System.Collections.Generic.List[string]
+        $info.Add("Date=$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))")
+        $info.Add("Action=$($plan.Action)")
+        $info.Add('About=Copies of each folder as it was before this change. Restore one with "Restore this backup" in CloudSave''s menu, or copy a folder back by hand while the game is closed.')
+        foreach ($line in $backupInfo) { $info.Add($line) }
+        Set-Content -LiteralPath (Join-Path $plan.BackupDir 'backup-info.txt') -Value $info -Encoding UTF8
+        Write-Log "Backup of the folders before this change: $($plan.BackupDir)"
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("Stamp=$($plan.Stamp)")
     $lines.Add("Action=$($plan.Action)")
     $lines.Add("Ok=$($ok.ToString().ToLowerInvariant())")
     $lines.Add("Log=$($plan.LogPath)")
+    if ($hasBackup) { $lines.Add("Backup=$($plan.BackupDir)") }
     if ($null -ne $fatal) { $lines.Add("Error=$fatal") }
     foreach ($line in $rootResults) { $lines.Add($line) }
+    foreach ($warning in $warnings) { $lines.Add("Warning=$warning") }
     $tmp = "$($plan.ResultPath).tmp"
     Set-Content -LiteralPath $tmp -Value $lines -Encoding UTF8
     Move-Item -LiteralPath $tmp -Destination $plan.ResultPath -Force
