@@ -5,3 +5,4 @@ deployed-backup/
 .vs/
 *.user
 BUGS-*.md
+Helper/run/
